@@ -2,19 +2,66 @@ import uuid
 import gradio as gr
 from dotenv import load_dotenv
 
-# 1. تحميل مفاتيح البيئة في السطر الأول
+# تحميل ملف البيئة والمفاتيح
 load_dotenv()
 
-# استيراد المخطط المستقر
+# استيراد المخطط الذي قمنا ببنائه في الملف السابق
 from agent import graph
 
 # =========================
-# RUN (START)
+# دالة مساعدة لتحديث البيانات في الواجهة
+# =========================
+def get_latest_ui_data(config, current_logs):
+    """تقوم هذه الدالة بجلب البيانات الحالية من الذاكرة وعرضها في الصناديق المناسبة بشكل آمن"""
+    state_now = graph.get_state(config)
+    current_state = state_now.values
+    
+    draft_display = ""
+    
+    # 1. عرض المحتوى المناسب في صندوق النتائج بناءً على المرحلة الحالية
+    if current_state.get("draft") and len(current_state["draft"]) > 0:
+        draft_display = f"📝 [المسودة الأخيرة - المراجعة رقم {current_state.get('revision_number', 0)}]:\n\n{current_state['draft'][-1]}"
+        if current_state.get("critique") and len(current_state["critique"]) > 0:
+            draft_display += f"\n\n{'='*40}\n❌ [ملاحظات ونقد المصحح]:\n\n{current_state['critique'][-1]}"
+            
+    elif current_state.get("plan"):
+        draft_display = f"📋 [الخطة الهيكلية المنشأة للمقال]:\n\n{current_state['plan']}"
+        
+    elif current_state.get("content") and len(current_state["content"]) > 0:
+        draft_display = f"🔍 [نتائج البحث المسترجعة من شبكة الإنترنت]:\n\n{current_state['content'][-1]}"
+    else:
+        draft_display = "⏳ جاري البحث في الإنترنت أو معالجة البيانات..."
+
+    # 2. تحديث سجل العمليات وإضافة إرشادات التوقف للمستخدم
+    updated_logs = current_logs
+    if state_now.next:
+        updated_logs += f"\n⏸️ توقف النظام تلقائياً قبل الخطوة: {list(state_now.next)}\n"
+        if "planner" in state_now.next:
+            updated_logs += "💡 [إمكانية التوجيه متاحة]:\n"
+            updated_logs += "   - يمكنك رؤية نتائج البحث في الصندوق المقابل لمعاينتها.\n"
+            updated_logs += "   - اضغط على زر 'استئناف' لتبدأ عملية التخطيط والكتابة بناءً على هذه المعلومات!\n"
+        else:
+            updated_logs += "👉 اضغط على زر 'استئناف' للانتقال إلى الخطوة التالية في المخطط.\n"
+        updated_logs += "-" * 40 + "\n"
+    else:
+        updated_logs += "\n✅ انتهت عملية النظام بالكامل وتم الوصول للنهاية!\n"
+
+    return updated_logs, draft_display
+
+
+# =========================
+# دالة تشغيل العميل لأول مرة (Start)
 # =========================
 def run_agent(task, max_revisions):
+    if not task.strip():
+        yield "⚠️ الرجاء كتابة السؤال أو المهمة أولاً!", "", ""
+        return
+
+    # إنشاء رقم تعريف فريد لهذه الجلسة
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
 
+    # إعداد البيانات الأولية للنظام
     inputs = {
         "task": task,
         "plan": "",
@@ -25,123 +72,83 @@ def run_agent(task, max_revisions):
         "max_revisions": int(max_revisions)
     }
 
-    logs = "🔄 Starting Agent (Step-by-Step Mode)...\n"
-    draft_display = ""
+    logs = "🔄 جاري بدء تشغيل العميل الذكي...\n📡 تم تفعيل أداة البحث في الإنترنت...\n"
+    yield logs, "جاري البحث في الإنترنت وحصد المعلومات...", thread_id
 
-    yield logs, draft_display, thread_id
-
-    # تشغيل المخطط لأول مرة لإنشاء الخطة
-    for event in graph.stream(inputs, config=config):
+    # تشغيل النظام تدريجياً (سيتوقف تلقائياً بعد مرحلة البحث وقبل مرحلة التخطيط)
+    for event in graph.stream(inputs, config=config, stream_mode="updates"):
         if isinstance(event, dict):
             for node in event.keys():
-                # نكتفي بطباعة حركة العقد فقط في الـ Logs لمنع التكرار البصري
-                logs += f"🔷 Completed Node: '{node}'\n"
-        yield logs, draft_display, thread_id
+                logs += f"🔷 اكتملت الخطوة: '{node}'\n"
+        yield logs, "جاري تحديث البيانات الحالية...", thread_id
 
-    # جلب الحالة النهائية بعد انتهاء عقدة التخطيط
-    current_state = graph.get_state(config).values
-    
-    # نضع الخطة داخل خانة الـ Draft وليس الـ Logs
-    if current_state.get("plan"):
-        draft_display = f"📋 [Generated Plan Overview]:\n\n{current_state['plan']}"
-
-    # فحص التوقف الإجباري وعرض التعليمات في الـ Logs بشكل نظيف
-    state_now = graph.get_state(config)
-    if state_now.next:
-        logs += f"\n⏸️ Agent paused automatically before node: {list(state_now.next)}\n"
-        logs += "💡 [Steering Enabled]:\n"
-        logs += "   - If you LIKE the plan in the Draft box, just click 'Resume'.\n"
-        logs += "   - If you DON'T LIKE it, change the question in 'Task' box now, then click 'Resume'!\n"
-        logs += "-" * 40 + "\n"
-        
+    # قراءة البيانات النهائية وعرضها للزبون في الواجهة
+    logs, draft_display = get_latest_ui_data(config, logs)
     yield logs, draft_display, thread_id
 
 
 # =========================
-# RESUME 
+# دالة استئناف العمل (Resume)
 # =========================
-def resume_agent(thread_id, current_task_text):
+def resume_agent(thread_id, current_task_text, current_logs):
     if not thread_id:
-        yield "⚠️ No active Thread ID found!", "", ""
+        yield "⚠️ لم يتم العثور على جلسة نشطة! يرجى الضغط على زر البدء أولاً.", "", ""
         return
 
     config = {"configurable": {"thread_id": thread_id}}
-
-    # تحديث نص المهمة في الذاكرة في حال قام المستخدم بتعديله
+    
+    # تحديث نص السؤال في الذاكرة في حال قام الزبون بتعديله أثناء التوقف
     graph.update_state(config, {"task": current_task_text})
 
-    # جلب الحالة والـ Logs السابقة للإضافة عليها وتجنب تصفير الصندوق
-    current_state = graph.get_state(config).values
-    
-    logs = f"▶️ Resuming workflow... Executing next step.\n" + "-" * 40 + "\n"
-    draft_display = ""
-    yield logs, draft_display, thread_id
+    # الحفاظ على السجلات القديمة وإضافة السجل الجديد عليها لمنع الاختفاء
+    logs = current_logs + f"▶️ جاري استئناف العمل... الانتقال إلى الخطوة التالية.\n" + "-" * 40 + "\n"
+    yield logs, "جاري المعالجة والكتابة...", thread_id
 
-    # استئناف المخطط بتمرير None ليتحرك من نقطة التوقف
-    for event in graph.stream(None, config=config):
+    # استئناف الحركة من نقطة التوقف الحالية حتى نقطة التوقف القادمة
+    for event in graph.stream(None, config=config, stream_mode="updates"):
         if isinstance(event, dict):
             for node in event.keys():
-                logs += f"🔷 Completed Node: '{node}'\n"
-        yield logs, draft_display, thread_id
-
-    # جلب الحالة المحدثة من الذاكرة لعرض المسودة أو النقد في خانة الـ Draft
-    current_state = graph.get_state(config).values
-    
-    if current_state.get("draft"):
-        # نعرض آخر مسودة تمت كتابتها في خانة الـ Draft
-        draft_display = f"📝 [Latest Draft]:\n\n{current_state['draft'][-1]}"
+                logs += f"🔷 اكتملت الخطوة: '{node}'\n"
         
-        # 🌟 تم الإصلاح هنا: تحويل علامات الاقتباس إلى مفردة لمنع الـ SyntaxError
-        if current_state.get("critique"):
-            draft_display += f"\n\n{'='*40}\n❌ [Critic Feedback]:\n\n{current_state['critique'][-1]}"
-    else:
-        # إذا لم تكن هناك مسودة بعد، نعرض الخطة الحالية
-        draft_display = f"📋 [Current Plan]:\n\n{current_state.get('plan', '')}"
+        # بث التحديثات خطوة بخطوة إلى الواجهة مباشرة ليراها المستخدم
+        temp_logs, temp_draft = get_latest_ui_data(config, logs)
+        yield temp_logs, temp_draft, thread_id
 
-    # فحص المقاطعة التالية
-    state_now = graph.get_state(config)
-    if state_now.next:
-        logs += f"\n⏸️ Agent paused automatically before node: {list(state_now.next)}\n"
-        logs += "👉 Click 'Resume' to take the next step.\n"
-        logs += "-" * 40 + "\n"
-    else:
-        logs += "\n✅ Agent workflow finished completely! (Reached END)\n"
-        
+    # التحديث الختامي بعد انتهاء المرحلة الحالية بالكامل
+    logs, draft_display = get_latest_ui_data(config, logs)
     yield logs, draft_display, thread_id
 
 
-# =========================
-# PAUSE 
-# =========================
 def pause_agent(thread_id):
-    return "⏸️ The agent stops automatically before main nodes. Just wait for it to pause, then use Resume.", gr.update(), thread_id
+    return "⏸️ النظام يتم إيقافه تلقائياً من خلال البنية البرمجية، لا حاجة للإيقاف اليدوي.", gr.update(), thread_id
 
 
 # =========================
-# UI DESIGN
+# تصميم واجهة المستخدم المرئية
 # =========================
 with gr.Blocks() as app:
-
-    gr.Markdown("# 🚀 Stable LangGraph Agent (Human-in-the-Loop Mode)")
+    gr.Markdown("# 🚀 نظام كتابة المقالات الذكي المدعوم بالبحث في الإنترنت")
 
     with gr.Row():
         with gr.Column():
-            task = gr.Textbox(label="Task", lines=4)
-            max_rev = gr.Slider(1, 5, value=2)
+            task = gr.Textbox(label="سؤال أو مهمة الزبون", lines=4, placeholder="مثال: ما هي آخر المستجدات في سباقات الفورمولا 1 لهذا الموسم؟")
+            max_rev = gr.Slider(1, 5, value=2, step=1, label="الحد الأقصى لمراجعات المقال")
 
-            start = gr.Button("Start", variant="primary")
-            pause = gr.Button("Pause")
-            resume = gr.Button("Resume")
+            with gr.Row():
+                start = gr.Button("بدء العمل", variant="primary")
+                resume = gr.Button("استئناف", variant="secondary")
+                pause = gr.Button("معلومات")
 
-            thread = gr.Textbox(label="Thread ID", interactive=False)
+            thread = gr.Textbox(label="رقم تعريف الجلسة الحالية", interactive=False)
 
         with gr.Column():
-            logs = gr.Textbox(label="Logs", lines=20)
-            draft = gr.Textbox(label="Draft / Output Results", lines=20)
+            logs = gr.Textbox(label="سجل سير العمليات وتتبع الخطوات", lines=10, interactive=False)
+            draft = gr.Textbox(label="صندوق النتائج (البحث / الخطة / المقال النهائي)", lines=15, interactive=False)
 
-    # ربط الأزرار
+    # ربط الأزرار بالدوال البرمجية وتحديد المدخلات والمخرجات لكل زر
     start.click(run_agent, [task, max_rev], [logs, draft, thread])
     pause.click(pause_agent, thread, [logs, draft, thread])
-    resume.click(resume_agent, [thread, task], [logs, draft, thread])
+    resume.click(resume_agent, [thread, task, logs], [logs, draft, thread])
 
+# تشغيل الواجهة بتنسيق مريح وبسيط
 app.launch(theme=gr.themes.Soft())

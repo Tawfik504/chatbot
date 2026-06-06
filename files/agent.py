@@ -1,55 +1,78 @@
 import operator
 from typing import TypedDict, List, Annotated
 
-# 🌟 تفعيل البيئة أولاً لحل مشاكل الصلاحيات والـ Threads
+# تحميل إعدادات البيئة ومفاتيح التشغيل
 from dotenv import load_dotenv
 load_dotenv()
 
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
-
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
+# 🌟 تم التعديل هنا: الاستيراد المستقر والمضمون دائماً لمنع خطأ الـ ImportError
+from langchain_community.tools import TavilySearchResults
+
 # =========================
-# MODEL
+# إعداد النموذج والأدوات
 # =========================
+# نستخدم نموذج جي بي تي 4 وتحديد درجة الإبداع إلى صفر لضمان الدقة
 model = ChatOpenAI(model="gpt-4o", temperature=0)
 
+# تحديد أداة البحث وجعلها تجلب أفضل 3 نتائج فقط لسرعة الأداء
+search_tool = TavilySearchResults(max_results=3)
+
 # =========================
-# STATE
+# ذاكرة النظام (حالة العميل)
 # =========================
 class AgentState(TypedDict):
-    task: str
-    plan: str
+    task: str           # سؤال أو مهمة الزبون
+    plan: str           # خطة العمل المنشأة
+    content: Annotated[List[str], operator.add]   # نصوص ومعلومات البحث المسترجعة
+    draft: Annotated[List[str], operator.add]     # المسودات والمقالات المكتوبة
+    critique: Annotated[List[str], operator.add]  # الملاحظات والنقد
+    revision_number: int  # رقم المراجعة الحالية
+    max_revisions: int    # الحد الأقصى للمراجعات المطلوب
 
-    draft: Annotated[List[str], operator.add]
-    critique: Annotated[List[str], operator.add]
-    content: Annotated[List[str], operator.add]
+# =========================
+# العقد (خطوات العمل)
+# =========================
 
-    revision_number: int
-    max_revisions: int
+def researcher(state):
+    """1. عقدة البحث: تأخذ سؤال الزبون وتبحث عنه في شبكة الإنترنت"""
+    query = state["task"]
     
-    # 💡 قمنا بإزالة المتغير paused اليدوي لأن المخطط سيقاطع التنفيذ تلقائياً
+    # تشغيل أداة البحث لجلب البيانات
+    search_results = search_tool.invoke({"query": query})
+    
+    # ترتيب وتنسيق النتائج المسترجعة في نص واحد واضح
+    formatted_results = "\n---\n".join(
+        [f"المصدر: {res.get('url', 'لا يوجد')}\nالمحتوى: {res.get('content', '')}" for res in search_results]
+    )
+    
+    # حفظ نتائج البحث في قائمة المحتويات
+    return {"content": [formatted_results]}
 
-# =========================
-# NODES
-# =========================
+
 def planner(state):
+    """2. عقدة التخطيط: تضع خطة المقال بناءً على نتائج البحث المسترجعة"""
+    context = state["content"][-1] if state.get("content") else "لم يتم العثور على معلومات من الإنترنت."
+    
     res = model.invoke([
-        SystemMessage(content="Create a structured plan."),
-        HumanMessage(content=state["task"])
+        SystemMessage(content="أنت خبير في وضع الخطط. صمم خطة هيكلية للمقال بناءً على معلومات البحث المسترجعة من الإنترنت والمرفقة في الرسالة."),
+        HumanMessage(content=f"سؤال الزبون: {state['task']}\n\nمعلومات البحث المسترجعة:\n{context}")
     ])
     return {"plan": res.content}
 
 
 def writer(state):
-    # نمرر آخر نقد تم توليده إن وجد لكي يستفيد منه الكاتب أثناء التعديل
-    last_critique = state["critique"][-1] if state.get("critique") else "None"
+    """3. عقدة الكتابة: صياغة المقال بالاعتماد على البحث والخطة والنقد السابق"""
+    last_critique = state["critique"][-1] if state.get("critique") else "لا يوجد نقد سابق."
+    context = state["content"][-1] if state.get("content") else "لم يتم العثور على معلومات من الإنترنت."
     
     res = model.invoke([
-        SystemMessage(content="Write a high quality article."),
-        HumanMessage(content=f"Task: {state['task']}\nPlan: {state['plan']}\nLast Critique: {last_critique}")
+        SystemMessage(content="أنت كاتب مقالات محترف. اكتب مقالاً مفصلاً ودقيقاً مستعيناً بمعلومات البحث ومتتبعاً للخطة الهيكلية الموضوعة."),
+        HumanMessage(content=f"المهمة: {state['task']}\n\nمعلومات البحث:\n{context}\n\nالخطة:\n{state['plan']}\n\nالنقد السابق:\n{last_critique}")
     ])
 
     return {
@@ -59,58 +82,58 @@ def writer(state):
 
 
 def critic(state):
+    """4. عقدة النقد: مراجعة المقال المكتوب وتحديد نقاط التحسين"""
     res = model.invoke([
-        SystemMessage(content="Critique the text. Be concise and point out what needs improvement."),
+        SystemMessage(content="أنت مصحح ومدقق لغوي وعلمي. راجع النص واكتب ملاحظاتك بشكل مختصر ومباشر وحدد ما يحتاج إلى تحسين."),
         HumanMessage(content=state["draft"][-1])
     ])
-
     return {"critique": [res.content]}
 
 # =========================
-# ROUTING
+# توجيه المسار تلقائياً
 # =========================
 def route_after_writer(state):
-    # الفحص الوحيد الآن: هل وصلنا للحد الأقصى للمراجعات المطلوبة؟
+    """فحص هل وصلنا إلى الحد الأقصى من التعديلات والمراجعات أم لا"""
     if state["revision_number"] >= state["max_revisions"]:
-        return END
-
-    # إذا لم ينتهِ، نذهب للنقد فوراً
-    return "critic"
+        return END  # إنهاء العمل
+    return "critic"  # الذهاب إلى النقد
 
 # =========================
-# GRAPH
+# بناء المخطط وتوصيله
 # =========================
 builder = StateGraph(AgentState)
 
-# إضافة العقد الأساسية فقط (بدون عقدة الـ wait الميتة)
+# إضافة الخطوات الأربعة إلى المخطط
+builder.add_node("researcher", researcher)
 builder.add_node("planner", planner)
 builder.add_node("writer", writer)
 builder.add_node("critic", critic)
 
-# الروابط والمنافذ
-builder.set_entry_point("planner")
-builder.add_edge("planner", "writer")
+# تحديد مسار التدفق بين الخطوات
+builder.set_entry_point("researcher")       # البداية من عقدة البحث أولاً
+builder.add_edge("researcher", "planner")   # الانتقال من البحث إلى التخطيط
+builder.add_edge("planner", "writer")       # الانتقال من التخطيط إلى الكتابة
 
-# حافة شرطية واحدة بعد الكاتب لمعرفة هل شارفنا على النهاية أم لا
+# تحديد المسار الشرطي بعد كتابة المقال
 builder.add_conditional_edges(
     "writer",
     route_after_writer,
     {
-        "critic": "critic",
-        END: END
+        "critic": "critic",  # إذا لم تنتهِ المراجعات يذهب للناقد
+        END: END             # إذا انتهت المراجعات يقف البرنامج وينتهي
     }
 )
 
-# بعد الناقد، نعود دائماً إلى الكاتب
+# بعد الانتهاء من النقد، يعود النظام دائماً إلى الكاتب لتحديث المقال
 builder.add_edge("critic", "writer")
 
-# الذاكرة المؤقتة السريعة والمستقرة للـ UI
+# إعداد ذاكرة الحفظ المؤقتة لضمان استقرار جلسات المستخدمين
 memory = InMemorySaver()
 
-# 🌟 السحر الحقيقي هنا 🌟
-# نقوم بـ compile للمخطط مع إخبار LangGraph بإيقاف ومقاطعة العمل إجبارياً (Interrupt) 
-# "قبل" الدخول في عقدة الكاتب وعقدة الناقد. 
+# تجميع المخطط وتفعيل خاصية المقاطعة التلقائية
+# النظام سيتوقف تلقائياً (قبل) مرحلة التخطيط ليعرض للمستخدم نتائج البحث أولاً،
+# وكذلك سيتوقف (قبل) مرحلة النقد لعرض المسودة والملاحظات.
 graph = builder.compile(
     checkpointer=memory,
-    interrupt_before=["writer", "critic"]
+    interrupt_before=["planner", "critic"]
 )

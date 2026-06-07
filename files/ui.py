@@ -2,15 +2,12 @@ import uuid
 import gradio as gr
 from dotenv import load_dotenv
 
-# تحميل ملف البيئة والمفاتيح
 load_dotenv()
 
-# استيراد المخطط الذي قمنا ببنائه في الملف السابق
+
 from agent import graph
 
-# =========================
-# دالة مساعدة لتحديث البيانات في الواجهة
-# =========================
+
 def get_latest_ui_data(config, current_logs):
     """تقوم هذه الدالة بجلب البيانات الحالية من الذاكرة وعرضها في الصناديق المناسبة بشكل آمن"""
     state_now = graph.get_state(config)
@@ -18,7 +15,7 @@ def get_latest_ui_data(config, current_logs):
     
     draft_display = ""
     
-    # 1. عرض المحتوى المناسب في صندوق النتائج بناءً على المرحلة الحالية
+
     if current_state.get("draft") and len(current_state["draft"]) > 0:
         draft_display = f"📝 [المسودة الأخيرة - المراجعة رقم {current_state.get('revision_number', 0)}]:\n\n{current_state['draft'][-1]}"
         if current_state.get("critique") and len(current_state["critique"]) > 0:
@@ -28,40 +25,37 @@ def get_latest_ui_data(config, current_logs):
         draft_display = f"📋 [الخطة الهيكلية المنشأة للمقال]:\n\n{current_state['plan']}"
         
     elif current_state.get("content") and len(current_state["content"]) > 0:
-        draft_display = f"🔍 [نتائج البحث المسترجعة من شبكة الإنترنت]:\n\n{current_state['content'][-1]}"
+        draft_display = f"🔍 [نتائج البحث التي جلبها الـ Agent بنفسه]:\n\n{current_state['content'][-1]}"
     else:
-        draft_display = "⏳ جاري البحث في الإنترنت أو معالجة البيانات..."
+        draft_display = "⏳ الـ Agent يفكر الآن ويحدد حاجته لاستخدام الأدوات..."
 
-    # 2. تحديث سجل العمليات وإضافة إرشادات التوقف للمستخدم
     updated_logs = current_logs
     if state_now.next:
-        updated_logs += f"\n⏸️ توقف النظام تلقائياً قبل الخطوة: {list(state_now.next)}\n"
-        if "planner" in state_now.next:
-            updated_logs += "💡 [إمكانية التوجيه متاحة]:\n"
-            updated_logs += "   - يمكنك رؤية نتائج البحث في الصندوق المقابل لمعاينتها.\n"
-            updated_logs += "   - اضغط على زر 'استئناف' لتبدأ عملية التخطيط والكتابة بناءً على هذه المعلومات!\n"
+        next_step = list(state_now.next)
+        updated_logs += f"\n⏸️ توقف النظام تلقائياً قبل الخطوة: {next_step}\n"
+        
+        if "critic" in next_step:
+            updated_logs += "💡 [المراجعة والتدقيق اللغوي جاهز]:\n"
+            updated_logs += "   - يمكنك رؤية مسودة المقال المكتوبة في الصندوق المقابل.\n"
+            updated_logs += "   - اضغط على زر 'استئناف' ليرسل النظام المسودة إلى المصحح لنقدها وتعديلها.\n"
         else:
-            updated_logs += "👉 اضغط على زر 'استئناف' للانتقال إلى الخطوة التالية في المخطط.\n"
+            updated_logs += "👉 اضغط على زر 'استئناف' ليتابع الـ Agent رحلته الذكية.\n"
         updated_logs += "-" * 40 + "\n"
     else:
-        updated_logs += "\n✅ انتهت عملية النظام بالكامل وتم الوصول للنهاية!\n"
+        updated_logs += "\n✅ انتهت عملية النظام بالكامل وصيغ المقال النهائي بنجاح!\n"
 
     return updated_logs, draft_display
 
 
-# =========================
-# دالة تشغيل العميل لأول مرة (Start)
-# =========================
 def run_agent(task, max_revisions):
     if not task.strip():
         yield "⚠️ الرجاء كتابة السؤال أو المهمة أولاً!", "", ""
         return
 
-    # إنشاء رقم تعريف فريد لهذه الجلسة
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
 
-    # إعداد البيانات الأولية للنظام
+    # تهيئة الحالة الافتراضية
     inputs = {
         "task": task,
         "plan": "",
@@ -72,24 +66,22 @@ def run_agent(task, max_revisions):
         "max_revisions": int(max_revisions)
     }
 
-    logs = "🔄 جاري بدء تشغيل العميل الذكي...\n📡 تم تفعيل أداة البحث في الإنترنت...\n"
-    yield logs, "جاري البحث في الإنترنت وحصد المعلومات...", thread_id
+   
+    logs = "🔄 جاري بدء تشغيل العميل الذكي (Agent)...\n🧠 يقوم العميل الآن بتحليل النص لتحديد ما إذا كان يحتاج للبحث في الإنترنت أم لا...\n"
+    yield logs, "جاري معالجة طلبك وتحديد المسار ذكياً...", thread_id
 
-    # تشغيل النظام تدريجياً (سيتوقف تلقائياً بعد مرحلة البحث وقبل مرحلة التخطيط)
     for event in graph.stream(inputs, config=config, stream_mode="updates"):
         if isinstance(event, dict):
             for node in event.keys():
-                logs += f"🔷 اكتملت الخطوة: '{node}'\n"
+  
+                display_node = "تفكير العميل واتخاذ القرار (core_agent)" if node == "core_agent" else node
+                logs += f"🔷 اكتملت الخطوة: '{display_node}'\n"
         yield logs, "جاري تحديث البيانات الحالية...", thread_id
 
-    # قراءة البيانات النهائية وعرضها للزبون في الواجهة
     logs, draft_display = get_latest_ui_data(config, logs)
     yield logs, draft_display, thread_id
 
 
-# =========================
-# دالة استئناف العمل (Resume)
-# =========================
 def resume_agent(thread_id, current_task_text, current_logs):
     if not thread_id:
         yield "⚠️ لم يتم العثور على جلسة نشطة! يرجى الضغط على زر البدء أولاً.", "", ""
@@ -97,58 +89,53 @@ def resume_agent(thread_id, current_task_text, current_logs):
 
     config = {"configurable": {"thread_id": thread_id}}
     
-    # تحديث نص السؤال في الذاكرة في حال قام الزبون بتعديله أثناء التوقف
+    
     graph.update_state(config, {"task": current_task_text})
 
-    # الحفاظ على السجلات القديمة وإضافة السجل الجديد عليها لمنع الاختفاء
     logs = current_logs + f"▶️ جاري استئناف العمل... الانتقال إلى الخطوة التالية.\n" + "-" * 40 + "\n"
-    yield logs, "جاري المعالجة والكتابة...", thread_id
-
-    # استئناف الحركة من نقطة التوقف الحالية حتى نقطة التوقف القادمة
+    yield logs, "جاري المعالجة والمتابعة...", thread_id
+    
     for event in graph.stream(None, config=config, stream_mode="updates"):
         if isinstance(event, dict):
             for node in event.keys():
-                logs += f"🔷 اكتملت الخطوة: '{node}'\n"
+                display_node = "تفكير العميل واتخاذ القرار (core_agent)" if node == "core_agent" else node
+                logs += f"🔷 اكتملت الخطوة: '{display_node}'\n"
         
-        # بث التحديثات خطوة بخطوة إلى الواجهة مباشرة ليراها المستخدم
         temp_logs, temp_draft = get_latest_ui_data(config, logs)
         yield temp_logs, temp_draft, thread_id
 
-    # التحديث الختامي بعد انتهاء المرحلة الحالية بالكامل
     logs, draft_display = get_latest_ui_data(config, logs)
     yield logs, draft_display, thread_id
 
 
 def pause_agent(thread_id):
-    return "⏸️ النظام يتم إيقافه تلقائياً من خلال البنية البرمجية، لا حاجة للإيقاف اليدوي.", gr.update(), thread_id
+    return "⏸️ النظام يتم إيقافه تلقائياً من خلال نقاط التوقف المبرمجة مسبقاً (Interrupts)، لا حاجة للإيقاف اليدوي.", gr.update(), thread_id
 
 
-# =========================
-# تصميم واجهة المستخدم المرئية
-# =========================
+
+# بناء واجهة Gradio
+
 with gr.Blocks() as app:
-    gr.Markdown("# 🚀 نظام كتابة المقالات الذكي المدعوم بالبحث في الإنترنت")
+    gr.Markdown("#  نظام كتابة المقالات الذكي ")
 
     with gr.Row():
         with gr.Column():
-            task = gr.Textbox(label="سؤال أو مهمة الزبون", lines=4, placeholder="مثال: ما هي آخر المستجدات في سباقات الفورمولا 1 لهذا الموسم؟")
+            task = gr.Textbox(label="سؤال أو مهمة الزبون", lines=4, placeholder="مثال: اكتب مقالاً عن أهمية التمارين الرياضية الصباحية.")
             max_rev = gr.Slider(1, 5, value=2, step=1, label="الحد الأقصى لمراجعات المقال")
 
             with gr.Row():
-                start = gr.Button("بدء العمل", variant="primary")
+                start = gr.Button("بدء العمل الذكي", variant="primary")
                 resume = gr.Button("استئناف", variant="secondary")
                 pause = gr.Button("معلومات")
 
             thread = gr.Textbox(label="رقم تعريف الجلسة الحالية", interactive=False)
 
         with gr.Column():
-            logs = gr.Textbox(label="سجل سير العمليات وتتبع الخطوات", lines=10, interactive=False)
-            draft = gr.Textbox(label="صندوق النتائج (البحث / الخطة / المقال النهائي)", lines=15, interactive=False)
+            logs = gr.Textbox(label="سجل تفكير العميل وتتبع الخطوات ", lines=10, interactive=False)
+            draft = gr.Textbox(label="صندوق المخرجات الديناميكي (نتائج البحث الذكي / الخطة / المقال المكتوب)", lines=15, interactive=False)
 
-    # ربط الأزرار بالدوال البرمجية وتحديد المدخلات والمخرجات لكل زر
     start.click(run_agent, [task, max_rev], [logs, draft, thread])
     pause.click(pause_agent, thread, [logs, draft, thread])
     resume.click(resume_agent, [thread, task, logs], [logs, draft, thread])
 
-# تشغيل الواجهة بتنسيق مريح وبسيط
 app.launch(theme=gr.themes.Soft())
